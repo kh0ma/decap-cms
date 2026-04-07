@@ -410,11 +410,9 @@ export default class GitLab implements Implementation {
   }
 
   getBranch(collection: string, slug: string) {
-    // External MR slugs encode source branch: mr-{iid}@{source_branch}:{file_slug}
-    const externalMatch = slug.match(/^mr-\d+@([^:]+):/);
-    if (externalMatch) {
-      return externalMatch[1];
-    }
+    // Check slug→branch cache for external MRs
+    const cachedBranch = this.api?.mrSlugBranchCache?.[`${collection}/${slug}`];
+    if (cachedBranch) return cachedBranch;
     const contentKey = generateContentKey(collection, slug);
     const branch = branchFromContentKey(contentKey);
     return branch;

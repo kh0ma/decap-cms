@@ -221,6 +221,10 @@ export default class API {
   initialWorkflowStatus: string;
   cmsLabelPrefix: string;
   collectionFolders: Record<string, string>;
+  // Cache of mr-{iid} -> source branch for external MRs
+  mrBranchCache: Record<string, string> = {};
+  // Cache of collection/slug -> source branch for external MRs
+  mrSlugBranchCache: Record<string, string> = {};
 
   graphQLClient?: ApolloClient<NormalizedCacheObject>;
 
@@ -731,10 +735,12 @@ export default class API {
       // For external branches, derive collection/slug from diff and encode MR iid
       try {
         const diffs = await this.getDifferences(mr.source_branch);
-        console.log(`[decap-fork] MR #${mr.iid} (${mr.source_branch}) diffs:`, diffs.map(d => d.path));
         const matched = diffs.map(d => this.collectionFromPath(d.path)).find(m => m !== null);
+        console.log(`[decap-fork] MR #${mr.iid} (${mr.source_branch}) diffs:`, diffs.map(d => d.path));
         console.log(`[decap-fork] MR #${mr.iid} matched:`, matched);
         if (matched) {
+          // Cache source branch for later use in getBranch
+          this.mrBranchCache[`mr-${mr.iid}`] = mr.source_branch;
           contentKeys.push(this.externalContentKey(mr.iid, matched.collection, matched.slug));
         }
       } catch (err) {
@@ -850,26 +856,18 @@ export default class API {
     return { iid: parseInt(match[1], 10), collection: match[2], slug: match[3] };
   }
 
-  parseSlugsWithBranch(slug: string): { iid: number; sourceBranch: string; fileSlug: string } | null {
-    // Format: mr-{iid}@{source_branch}:{file_slug}
-    const match = slug.match(/^mr-(\d+)@([^:]+):(.+)$/);
-    if (!match) return null;
-    return { iid: parseInt(match[1], 10), sourceBranch: match[2], fileSlug: match[3] };
-  }
-
   async getMergeRequestByContentKey(contentKey: string): Promise<GitLabMergeRequest> {
     const external = this.parseExternalContentKey(contentKey);
     if (external) {
       return this.requestJSON({ url: `${this.repoURL}/merge_requests/${external.iid}` });
     }
-    // Check for encoded slug format (collection:mr-{iid}@branch:slug)
-    const slugPart = contentKey.includes('/') ? contentKey.split('/').slice(1).join('/') : contentKey;
-    const encoded = this.parseSlugsWithBranch(slugPart);
-    if (encoded) {
-      return this.requestJSON({ url: `${this.repoURL}/merge_requests/${encoded.iid}` });
+    // Check slug→branch cache: contentKey may be collection/slug for an external MR
+    const branch = this.mrSlugBranchCache[contentKey];
+    if (branch) {
+      const mergeRequests = await this.getMergeRequests(branch);
+      if (mergeRequests.length > 0) return mergeRequests[0];
     }
-    const branch = branchFromContentKey(contentKey);
-    return this.getBranchMergeRequest(branch);
+    return this.getBranchMergeRequest(branchFromContentKey(contentKey));
   }
 
   async retrieveUnpublishedEntryData(contentKey: string) {
@@ -880,12 +878,13 @@ export default class API {
 
     if (external) {
       collection = external.collection;
+      slug = external.slug;
       mergeRequest = await this.requestJSON({
         url: `${this.repoURL}/merge_requests/${external.iid}`,
       });
-      // Encode source branch in slug so getBranch can retrieve it without async
-      // Format: mr-{iid}@{source_branch}:{file_slug}
-      slug = `mr-${external.iid}@${mergeRequest.source_branch}:${external.slug}`;
+      // Cache source branch by collection/slug for getBranch lookup
+      this.mrBranchCache[`mr-${external.iid}`] = mergeRequest.source_branch;
+      this.mrSlugBranchCache[`${collection}/${slug}`] = mergeRequest.source_branch;
     } else {
       const parsed = parseContentKey(contentKey);
       collection = parsed.collection;
