@@ -24,10 +24,15 @@ jobs:
         env:
           CYPRESS_INSTALL_BINARY: 0
 
-      - name: Build
-        run: npm run build
+      - name: Build decap-cms package only
+        run: |
+          npm run build:esm
+          npx nx build decap-cms
         env:
           NODE_OPTIONS: --max-old-space-size=4096
+
+      - name: Show build output
+        run: ls -la packages/decap-cms/dist/
 
       - name: Delete existing latest release
         run: gh release delete latest --yes || true
@@ -37,7 +42,7 @@ jobs:
       - name: Create latest release with decap-cms.js
         run: |
           gh release create latest \
-            packages/decap-cms/dist/decap-cms.js \
+            "packages/decap-cms/dist/cms.js#decap-cms.js" \
             --title "latest" \
             --notes "Auto-built from main branch, commit ${{ github.sha }}" \
             --prerelease
