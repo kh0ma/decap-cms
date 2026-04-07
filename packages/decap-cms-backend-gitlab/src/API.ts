@@ -889,11 +889,48 @@ export default class API {
       const parsed = parseContentKey(contentKey);
       collection = parsed.collection;
       slug = parsed.slug;
-      const branch = branchFromContentKey(contentKey);
-      mergeRequest = await this.getBranchMergeRequest(branch);
+
+      // Check if this collection/slug belongs to a known external MR
+      const cachedBranch = this.mrSlugBranchCache[contentKey];
+      if (cachedBranch) {
+        const mrs = await this.getMergeRequests(cachedBranch);
+        if (mrs.length > 0) {
+          mergeRequest = mrs[0];
+        } else {
+          throw new EditorialWorkflowError('content is not under editorial workflow', true);
+        }
+      } else {
+        // Try to find MR by scanning — look for MR that touches this collection's folder
+        const folder = this.collectionFolders[collection];
+        if (folder) {
+          const allMRs = await this.getMergeRequests();
+          let found = false;
+          for (const mr of allMRs) {
+            if (mr.source_branch.startsWith(CMS_BRANCH_PREFIX + '/')) continue;
+            try {
+              const diffs = await this.getDifferences(mr.source_branch);
+              const match = diffs.map(d => this.collectionFromPath(d.path)).find(
+                m => m !== null && m.collection === collection && m.slug === slug
+              );
+              if (match) {
+                mergeRequest = mr;
+                this.mrSlugBranchCache[contentKey] = mr.source_branch;
+                found = true;
+                break;
+              }
+            } catch (_) {}
+          }
+          if (!found) {
+            throw new EditorialWorkflowError('content is not under editorial workflow', true);
+          }
+        } else {
+          const branch = branchFromContentKey(contentKey);
+          mergeRequest = await this.getBranchMergeRequest(branch);
+        }
+      }
     }
 
-    const diffs = await this.getDifferences(mergeRequest.sha);
+    const diffs = await this.getDifferences(mergeRequest.source_branch);
     const diffsWithIds = await Promise.all(
       diffs.map(async d => {
         const { path, newFile } = d;
