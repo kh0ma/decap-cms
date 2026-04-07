@@ -727,7 +727,7 @@ export default class API {
       }
       // For external branches, derive collection/slug from diff and encode MR iid
       try {
-        const diffs = await this.getDifferences(mr.sha);
+        const diffs = await this.getDifferences(mr.source_branch);
         const matched = diffs.map(d => this.collectionFromPath(d.path)).find(m => m !== null);
         if (matched) {
           contentKeys.push(this.externalContentKey(mr.iid, matched.collection, matched.slug));
