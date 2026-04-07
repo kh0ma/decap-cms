@@ -839,22 +839,20 @@ export default class API {
     return null;
   }
 
-  // Content key for external MRs: mr-{iid}/collection/slug
-  // This allows all downstream methods to look up the MR by iid
+  // Content key for external MRs: mr-{iid}:{collection}:{slug}
   externalContentKey(iid: number, collection: string, slug: string) {
-    return `mr-${iid}/${collection}/${slug}`;
+    return `mr-${iid}:${collection}:${slug}`;
   }
 
   parseExternalContentKey(contentKey: string): { iid: number; collection: string; slug: string } | null {
-    // Format 1: mr-{iid}/collection/slug (from listUnpublishedBranches)
-    const match1 = contentKey.match(/^mr-(\d+)\/(.+)\/([^/]+)$/);
-    if (match1) return { iid: parseInt(match1[1], 10), collection: match1[2], slug: match1[3] };
-    return null;
+    const match = contentKey.match(/^mr-(\d+):([^:]+):(.+)$/);
+    if (!match) return null;
+    return { iid: parseInt(match[1], 10), collection: match[2], slug: match[3] };
   }
 
   parseSlugsWithBranch(slug: string): { iid: number; sourceBranch: string; fileSlug: string } | null {
-    // Format: mr-{iid}@{source_branch}/{file_slug}
-    const match = slug.match(/^mr-(\d+)@([^/]+)\/(.+)$/);
+    // Format: mr-{iid}@{source_branch}:{file_slug}
+    const match = slug.match(/^mr-(\d+)@([^:]+):(.+)$/);
     if (!match) return null;
     return { iid: parseInt(match[1], 10), sourceBranch: match[2], fileSlug: match[3] };
   }
@@ -864,7 +862,7 @@ export default class API {
     if (external) {
       return this.requestJSON({ url: `${this.repoURL}/merge_requests/${external.iid}` });
     }
-    // Check for encoded slug format (collection/mr-{iid}@branch/slug)
+    // Check for encoded slug format (collection:mr-{iid}@branch:slug)
     const slugPart = contentKey.includes('/') ? contentKey.split('/').slice(1).join('/') : contentKey;
     const encoded = this.parseSlugsWithBranch(slugPart);
     if (encoded) {
@@ -886,7 +884,8 @@ export default class API {
         url: `${this.repoURL}/merge_requests/${external.iid}`,
       });
       // Encode source branch in slug so getBranch can retrieve it without async
-      slug = `mr-${external.iid}@${mergeRequest.source_branch}/${external.slug}`;
+      // Format: mr-{iid}@{source_branch}:{file_slug}
+      slug = `mr-${external.iid}@${mergeRequest.source_branch}:${external.slug}`;
     } else {
       const parsed = parseContentKey(contentKey);
       collection = parsed.collection;
