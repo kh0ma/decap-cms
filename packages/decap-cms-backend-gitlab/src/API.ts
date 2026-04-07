@@ -717,6 +717,9 @@ export default class API {
     );
 
     const mergeRequests = await this.getMergeRequests();
+    console.log('[decap-fork] Total MRs fetched:', mergeRequests.length, mergeRequests.map(mr => `#${mr.iid} ${mr.source_branch}`));
+    console.log('[decap-fork] collectionFolders:', this.collectionFolders);
+
     const contentKeys: string[] = [];
 
     for (const mr of mergeRequests) {
@@ -728,15 +731,18 @@ export default class API {
       // For external branches, derive collection/slug from diff and encode MR iid
       try {
         const diffs = await this.getDifferences(mr.source_branch);
+        console.log(`[decap-fork] MR #${mr.iid} (${mr.source_branch}) diffs:`, diffs.map(d => d.path));
         const matched = diffs.map(d => this.collectionFromPath(d.path)).find(m => m !== null);
+        console.log(`[decap-fork] MR #${mr.iid} matched:`, matched);
         if (matched) {
           contentKeys.push(this.externalContentKey(mr.iid, matched.collection, matched.slug));
         }
-      } catch (_) {
-        // Skip MRs we can't process
+      } catch (err) {
+        console.warn(`[decap-fork] MR #${mr.iid} skipped:`, err);
       }
     }
 
+    console.log('[decap-fork] Final contentKeys:', contentKeys);
     return contentKeys;
   }
 
