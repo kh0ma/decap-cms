@@ -739,8 +739,16 @@ export default class API {
         console.log(`[decap-fork] MR #${mr.iid} (${mr.source_branch}) diffs:`, diffs.map(d => d.path));
         console.log(`[decap-fork] MR #${mr.iid} matched:`, matched);
         if (matched) {
-          // Cache source branch for later use in getBranch
+          // Cache source branch for later use in getBranch and editorialWorkflowGit
           this.mrBranchCache[`mr-${mr.iid}`] = mr.source_branch;
+          const contentKey = `${matched.collection}/${matched.slug}`;
+          this.mrSlugBranchCache[contentKey] = mr.source_branch;
+          // Add decap label if missing so status tracking works
+          const hasLabel = mr.labels.some(l => isCMSLabel(l, this.cmsLabelPrefix));
+          if (!hasLabel) {
+            const labels = [...mr.labels, statusToLabel(this.initialWorkflowStatus || 'draft', this.cmsLabelPrefix)];
+            this.updateMergeRequestLabels(mr, labels).catch(() => {});
+          }
           contentKeys.push(this.externalContentKey(mr.iid, matched.collection, matched.slug));
         }
       } catch (err) {
@@ -1002,8 +1010,39 @@ export default class API {
     options: PersistOptions,
   ) {
     const contentKey = generateContentKey(options.collectionName as string, slug);
-    const branch = branchFromContentKey(contentKey);
     const unpublished = options.unpublished || false;
+
+    // Check if this is an external MR (developer-created branch)
+    const externalBranch = this.mrSlugBranchCache[contentKey];
+    if (externalBranch) {
+      // For external MRs, commit to their branch and add decap label if missing
+      if (unpublished) {
+        const mergeRequest = await this.getMergeRequests(externalBranch).then(mrs => mrs[0]);
+        await this.rebaseMergeRequest(mergeRequest);
+        const [items, diffs] = await Promise.all([
+          this.getCommitItems(files, externalBranch),
+          this.getDifferences(externalBranch),
+        ]);
+        for (const diff of diffs.filter(d => d.binary)) {
+          if (!items.some(item => item.path === diff.path)) {
+            items.push({ action: CommitAction.DELETE, path: diff.newPath });
+          }
+        }
+        await this.uploadAndCommit(items, {
+          commitMessage: options.commitMessage,
+          branch: externalBranch,
+        });
+        // Add decap label if not already present
+        const hasLabel = mergeRequest.labels.some(l => isCMSLabel(l, this.cmsLabelPrefix));
+        if (!hasLabel) {
+          const labels = [...mergeRequest.labels, statusToLabel(options.status || this.initialWorkflowStatus, this.cmsLabelPrefix)];
+          await this.updateMergeRequestLabels(mergeRequest, labels);
+        }
+      }
+      return;
+    }
+
+    const branch = branchFromContentKey(contentKey);
     if (!unpublished) {
       const items = await this.getCommitItems(files, this.branch);
       await this.uploadAndCommit(items, {
