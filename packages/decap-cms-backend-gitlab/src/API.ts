@@ -60,6 +60,7 @@ export interface Config {
   initialWorkflowStatus: string;
   cmsLabelPrefix: string;
   useGraphQL?: boolean;
+  collectionFolders?: Record<string, string>; // collection name -> folder path
 }
 
 export interface CommitAuthor {
@@ -219,6 +220,7 @@ export default class API {
   squashMerges: boolean;
   initialWorkflowStatus: string;
   cmsLabelPrefix: string;
+  collectionFolders: Record<string, string>;
 
   graphQLClient?: ApolloClient<NormalizedCacheObject>;
 
@@ -232,6 +234,7 @@ export default class API {
     this.squashMerges = config.squashMerges;
     this.initialWorkflowStatus = config.initialWorkflowStatus;
     this.cmsLabelPrefix = config.cmsLabelPrefix;
+    this.collectionFolders = config.collectionFolders || {};
     if (config.useGraphQL === true) {
       this.graphQLClient = this.getApolloClient();
     }
@@ -698,18 +701,13 @@ export default class API {
       url: `${this.repoURL}/merge_requests`,
       params: {
         state: 'opened',
-        labels: 'Any',
         per_page: 100,
         target_branch: this.branch,
         ...(sourceBranch ? { source_branch: sourceBranch } : {}),
       },
     });
 
-    return mergeRequests.filter(
-      mr =>
-        mr.source_branch.startsWith(CMS_BRANCH_PREFIX) &&
-        mr.labels.some(l => isCMSLabel(l, this.cmsLabelPrefix)),
-    );
+    return mergeRequests;
   }
 
   async listUnpublishedBranches() {
@@ -719,9 +717,27 @@ export default class API {
     );
 
     const mergeRequests = await this.getMergeRequests();
-    const branches = mergeRequests.map(mr => mr.source_branch);
+    const contentKeys: string[] = [];
 
-    return branches;
+    for (const mr of mergeRequests) {
+      // For CMS-managed branches, use the standard content key derivation
+      if (mr.source_branch.startsWith(CMS_BRANCH_PREFIX + '/')) {
+        contentKeys.push(mr.source_branch);
+        continue;
+      }
+      // For external branches, derive collection/slug from diff and encode MR iid
+      try {
+        const diffs = await this.getDifferences(mr.sha);
+        const matched = diffs.map(d => this.collectionFromPath(d.path)).find(m => m !== null);
+        if (matched) {
+          contentKeys.push(this.externalContentKey(mr.iid, matched.collection, matched.slug));
+        }
+      } catch (_) {
+        // Skip MRs we can't process
+      }
+    }
+
+    return contentKeys;
   }
 
   async getFileId(path: string, branch: string) {
@@ -753,6 +769,15 @@ export default class API {
   }
 
   async getBranchMergeRequest(branch: string) {
+    // Support mr-{iid} content keys for all MRs (not just cms/ branches)
+    if (branch.startsWith('mr-')) {
+      const iid = parseInt(branch.slice(3), 10);
+      const mr: GitLabMergeRequest = await this.requestJSON({
+        url: `${this.repoURL}/merge_requests/${iid}`,
+      });
+      return mr;
+    }
+
     const mergeRequests = await this.getMergeRequests(branch);
     if (mergeRequests.length <= 0) {
       throw new EditorialWorkflowError('content is not under editorial workflow', true);
@@ -797,20 +822,83 @@ export default class API {
     });
   }
 
-  async retrieveUnpublishedEntryData(contentKey: string) {
-    const { collection, slug } = parseContentKey(contentKey);
+  collectionFromPath(filePath: string): { collection: string; slug: string } | null {
+    for (const [colName, folder] of Object.entries(this.collectionFolders)) {
+      const normalizedFolder = folder.replace(/\/$/, '') + '/';
+      if (filePath.startsWith(normalizedFolder)) {
+        const slug = filePath.slice(normalizedFolder.length).replace(/\.md$/, '');
+        return { collection: colName, slug };
+      }
+    }
+    return null;
+  }
+
+  // Content key for external MRs: mr-{iid}/collection/slug
+  // This allows all downstream methods to look up the MR by iid
+  externalContentKey(iid: number, collection: string, slug: string) {
+    return `mr-${iid}/${collection}/${slug}`;
+  }
+
+  parseExternalContentKey(contentKey: string): { iid: number; collection: string; slug: string } | null {
+    // Format 1: mr-{iid}/collection/slug (from listUnpublishedBranches)
+    const match1 = contentKey.match(/^mr-(\d+)\/(.+)\/([^/]+)$/);
+    if (match1) return { iid: parseInt(match1[1], 10), collection: match1[2], slug: match1[3] };
+    return null;
+  }
+
+  parseSlugsWithBranch(slug: string): { iid: number; sourceBranch: string; fileSlug: string } | null {
+    // Format: mr-{iid}@{source_branch}/{file_slug}
+    const match = slug.match(/^mr-(\d+)@([^/]+)\/(.+)$/);
+    if (!match) return null;
+    return { iid: parseInt(match[1], 10), sourceBranch: match[2], fileSlug: match[3] };
+  }
+
+  async getMergeRequestByContentKey(contentKey: string): Promise<GitLabMergeRequest> {
+    const external = this.parseExternalContentKey(contentKey);
+    if (external) {
+      return this.requestJSON({ url: `${this.repoURL}/merge_requests/${external.iid}` });
+    }
+    // Check for encoded slug format (collection/mr-{iid}@branch/slug)
+    const slugPart = contentKey.includes('/') ? contentKey.split('/').slice(1).join('/') : contentKey;
+    const encoded = this.parseSlugsWithBranch(slugPart);
+    if (encoded) {
+      return this.requestJSON({ url: `${this.repoURL}/merge_requests/${encoded.iid}` });
+    }
     const branch = branchFromContentKey(contentKey);
-    const mergeRequest = await this.getBranchMergeRequest(branch);
+    return this.getBranchMergeRequest(branch);
+  }
+
+  async retrieveUnpublishedEntryData(contentKey: string) {
+    const external = this.parseExternalContentKey(contentKey);
+    let collection: string;
+    let slug: string;
+    let mergeRequest: GitLabMergeRequest;
+
+    if (external) {
+      collection = external.collection;
+      mergeRequest = await this.requestJSON({
+        url: `${this.repoURL}/merge_requests/${external.iid}`,
+      });
+      // Encode source branch in slug so getBranch can retrieve it without async
+      slug = `mr-${external.iid}@${mergeRequest.source_branch}/${external.slug}`;
+    } else {
+      const parsed = parseContentKey(contentKey);
+      collection = parsed.collection;
+      slug = parsed.slug;
+      const branch = branchFromContentKey(contentKey);
+      mergeRequest = await this.getBranchMergeRequest(branch);
+    }
+
     const diffs = await this.getDifferences(mergeRequest.sha);
     const diffsWithIds = await Promise.all(
       diffs.map(async d => {
         const { path, newFile } = d;
-        const id = await this.getFileId(path, branch);
+        const id = await this.getFileId(path, mergeRequest.source_branch);
         return { id, path, newFile };
       }),
     );
-    const label = mergeRequest.labels.find(l => isCMSLabel(l, this.cmsLabelPrefix)) as string;
-    const status = labelToStatus(label, this.cmsLabelPrefix);
+    const label = mergeRequest.labels.find(l => isCMSLabel(l, this.cmsLabelPrefix));
+    const status = label ? labelToStatus(label, this.cmsLabelPrefix) : this.initialWorkflowStatus || 'draft';
     const updatedAt = mergeRequest.updated_at;
     const pullRequestAuthor = mergeRequest.author.name;
     return {
@@ -920,8 +1008,7 @@ export default class API {
 
   async updateUnpublishedEntryStatus(collection: string, slug: string, newStatus: string) {
     const contentKey = generateContentKey(collection, slug);
-    const branch = branchFromContentKey(contentKey);
-    const mergeRequest = await this.getBranchMergeRequest(branch);
+    const mergeRequest = await this.getMergeRequestByContentKey(contentKey);
 
     const labels = [
       ...mergeRequest.labels.filter(label => !isCMSLabel(label, this.cmsLabelPrefix)),
@@ -945,8 +1032,7 @@ export default class API {
 
   async publishUnpublishedEntry(collectionName: string, slug: string) {
     const contentKey = generateContentKey(collectionName, slug);
-    const branch = branchFromContentKey(contentKey);
-    const mergeRequest = await this.getBranchMergeRequest(branch);
+    const mergeRequest = await this.getMergeRequestByContentKey(contentKey);
     await this.mergeMergeRequest(mergeRequest);
   }
 
@@ -984,10 +1070,14 @@ export default class API {
 
   async deleteUnpublishedEntry(collectionName: string, slug: string) {
     const contentKey = generateContentKey(collectionName, slug);
-    const branch = branchFromContentKey(contentKey);
-    const mergeRequest = await this.getBranchMergeRequest(branch);
+    const external = this.parseExternalContentKey(contentKey);
+    const mergeRequest = await this.getMergeRequestByContentKey(contentKey);
     await this.closeMergeRequest(mergeRequest);
-    await this.deleteBranch(branch);
+    // Only delete the branch for CMS-managed MRs (cms/ branches)
+    if (!external) {
+      const branch = branchFromContentKey(contentKey);
+      await this.deleteBranch(branch);
+    }
   }
 
   async getMergeRequestStatues(mergeRequest: GitLabMergeRequest, branch: string) {
@@ -1002,9 +1092,8 @@ export default class API {
 
   async getStatuses(collectionName: string, slug: string) {
     const contentKey = generateContentKey(collectionName, slug);
-    const branch = branchFromContentKey(contentKey);
-    const mergeRequest = await this.getBranchMergeRequest(branch);
-    const statuses: GitLabCommitStatus[] = await this.getMergeRequestStatues(mergeRequest, branch);
+    const mergeRequest = await this.getMergeRequestByContentKey(contentKey);
+    const statuses: GitLabCommitStatus[] = await this.getMergeRequestStatues(mergeRequest, mergeRequest.source_branch);
     return statuses.map(({ name, status, target_url }) => ({
       context: name,
       state: status === GitLabCommitStatuses.Success ? PreviewState.Success : PreviewState.Other,
@@ -1014,8 +1103,7 @@ export default class API {
 
   async getUnpublishedEntrySha(collection: string, slug: string) {
     const contentKey = generateContentKey(collection, slug);
-    const branch = branchFromContentKey(contentKey);
-    const mergeRequest = await this.getBranchMergeRequest(branch);
+    const mergeRequest = await this.getMergeRequestByContentKey(contentKey);
     return mergeRequest.sha;
   }
 }

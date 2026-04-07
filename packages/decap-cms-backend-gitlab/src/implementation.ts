@@ -65,7 +65,7 @@ export default class GitLab implements Implementation {
   useGraphQL: boolean;
   graphQLAPIRoot: string;
 
-  _mediaDisplayURLSem?: Semaphore;
+  collectionFolders: Record<string, string>;
 
   constructor(config: Config, options = {}) {
     this.options = {
@@ -95,6 +95,7 @@ export default class GitLab implements Implementation {
     this.previewContext = config.backend.preview_context || '';
     this.useGraphQL = config.backend.use_graphql || false;
     this.graphQLAPIRoot = config.backend.graphql_api_root || 'https://gitlab.com/api/graphql';
+    this.collectionFolders = (config.backend as any).collection_folders || {};
     this.lock = asyncLock();
   }
 
@@ -135,6 +136,7 @@ export default class GitLab implements Implementation {
       initialWorkflowStatus: this.options.initialWorkflowStatus,
       useGraphQL: this.useGraphQL,
       graphQLAPIRoot: this.graphQLAPIRoot,
+      collectionFolders: this.collectionFolders,
     });
     const user = await this.api.user();
     const isCollab = await this.api.hasWriteAccess().catch((error: Error) => {
@@ -408,6 +410,11 @@ export default class GitLab implements Implementation {
   }
 
   getBranch(collection: string, slug: string) {
+    // External MR slugs encode source branch: mr-{iid}@{source_branch}/{file_slug}
+    const externalMatch = slug.match(/^mr-\d+@([^/]+)\//);
+    if (externalMatch) {
+      return externalMatch[1];
+    }
     const contentKey = generateContentKey(collection, slug);
     const branch = branchFromContentKey(contentKey);
     return branch;

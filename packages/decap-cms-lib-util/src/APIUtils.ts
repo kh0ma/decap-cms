@@ -30,6 +30,10 @@ export function parseContentKey(contentKey: string) {
 }
 
 export function contentKeyFromBranch(branch: string) {
+  // External MR content keys (mr-{iid}/collection/slug) pass through unchanged
+  if (branch.startsWith('mr-')) {
+    return branch;
+  }
   return branch.slice(`${CMS_BRANCH_PREFIX}/`.length);
 }
 
