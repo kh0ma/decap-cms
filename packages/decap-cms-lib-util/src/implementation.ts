@@ -282,6 +282,7 @@ export async function unpublishedEntries(listEntriesKeys: () => Promise<string[]
     const keys = await listEntriesKeys();
     return keys;
   } catch (error) {
+    console.warn('[decap-fork] unpublishedEntries error:', error.message, error);
     if (error.message === 'Not Found') {
       return Promise.resolve([]);
     }
