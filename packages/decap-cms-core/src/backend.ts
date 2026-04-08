@@ -980,6 +980,7 @@ export class Backend {
           if (!entryData) return null;
           const collectionName = entryData.collection;
           const collection = collections.find(c => c.get('name') === collectionName);
+          console.log(`[decap-fork] entry '${id}': collection='${collectionName}' found=${!!collection} slug='${entryData.slug}'`);
           if (!collection) {
             console.warn(`Missing collection '${collectionName}' for unpublished entry '${id}'`);
             return null;

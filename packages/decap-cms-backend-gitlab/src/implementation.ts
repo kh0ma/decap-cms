@@ -380,9 +380,11 @@ export default class GitLab implements Implementation {
 
   async unpublishedEntries() {
     const listEntriesKeys = () =>
-      this.api!.listUnpublishedBranches().then(branches =>
-        branches.map(branch => contentKeyFromBranch(branch)),
-      );
+      this.api!.listUnpublishedBranches().then(branches => {
+        const keys = branches.map(branch => contentKeyFromBranch(branch));
+        console.log('[decap-fork] unpublishedEntries keys:', keys);
+        return keys;
+      });
 
     const ids = await unpublishedEntries(listEntriesKeys);
     return ids;
