@@ -382,7 +382,7 @@ export default class GitLab implements Implementation {
     const listEntriesKeys = () =>
       this.api!.listUnpublishedBranches().then(branches => {
         const keys = branches.map(branch => contentKeyFromBranch(branch));
-        console.log('[decap-fork] unpublishedEntries keys:', keys);
+        console.log('[decap-fork] unpublishedEntries branches count:', branches.length, 'keys count:', keys.length, 'keys:', keys);
         return keys;
       });
 
