@@ -966,6 +966,7 @@ export default class API {
       pullRequestAuthor,
     };
     } catch (err) {
+      console.warn('[decap-fork] retrieveUnpublishedEntryData error for', contentKey, ':', err.message, err);
       if (err instanceof EditorialWorkflowError) throw err;
       throw new EditorialWorkflowError('content is not under editorial workflow', true);
     }
