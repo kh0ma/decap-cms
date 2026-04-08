@@ -973,7 +973,11 @@ export class Backend {
     const entries = (
       await Promise.all(
         ids.map(async id => {
-          const entryData = await this.implementation.unpublishedEntry({ id });
+          const entryData = await this.implementation.unpublishedEntry({ id }).catch(err => {
+            console.warn(`Skipping unpublished entry '${id}':`, err.message);
+            return null;
+          });
+          if (!entryData) return null;
           const collectionName = entryData.collection;
           const collection = collections.find(c => c.get('name') === collectionName);
           if (!collection) {

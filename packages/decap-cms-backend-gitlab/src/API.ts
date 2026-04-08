@@ -884,12 +884,19 @@ export default class API {
     let slug: string;
     let mergeRequest: GitLabMergeRequest;
 
+    try {
     if (external) {
       collection = external.collection;
       slug = external.slug;
       mergeRequest = await this.requestJSON({
         url: `${this.repoURL}/merge_requests/${external.iid}`,
       });
+      // If MR is no longer open, remove from cache and bail
+      if (mergeRequest.state !== 'opened') {
+        delete this.mrSlugBranchCache[`${collection}/${slug}`];
+        delete this.mrBranchCache[`mr-${external.iid}`];
+        throw new EditorialWorkflowError('content is not under editorial workflow', true);
+      }
       // Cache source branch by collection/slug for getBranch lookup
       this.mrBranchCache[`mr-${external.iid}`] = mergeRequest.source_branch;
       this.mrSlugBranchCache[`${collection}/${slug}`] = mergeRequest.source_branch;
@@ -958,6 +965,10 @@ export default class API {
       updatedAt,
       pullRequestAuthor,
     };
+    } catch (err) {
+      if (err instanceof EditorialWorkflowError) throw err;
+      throw new EditorialWorkflowError('content is not under editorial workflow', true);
+    }
   }
 
   async rebaseMergeRequest(mergeRequest: GitLabMergeRequest) {
